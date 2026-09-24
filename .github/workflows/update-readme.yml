@@ -1,6 +1,15 @@
 name: Update README
 on:
   workflow_call:
+    inputs:
+      commit_mode:
+        description: '"push" commits to the branch directly. "pull-request" opens an auto-merging PR, for branches that require PRs and status checks.'
+        type: string
+        default: push
+    secrets:
+      pr_token:
+        description: 'Personal access token for "pull-request" mode. Pushes and PRs made with GITHUB_TOKEN never trigger the required status checks.'
+        required: false
 jobs:
   update-readme:
     runs-on: ubuntu-24.04
@@ -10,9 +19,28 @@ jobs:
       run:
         # An explicit shell turns on pipefail, so a failed download stops the job instead of emptying the README
         shell: bash
+    env:
+      COMMIT_MODE: ${{ inputs.commit_mode }}
+      PR_BRANCH: readme-sync
     steps:
+      - name: Check Settings 🔍
+        if: inputs.commit_mode != 'push'
+        env:
+          HAS_PR_TOKEN: ${{ secrets.pr_token != '' }}
+        run: |
+          if [ "$COMMIT_MODE" != "pull-request" ]; then
+            echo "::error::commit_mode must be \"push\" or \"pull-request\", got \"$COMMIT_MODE\"."
+            exit 1
+          fi
+          if [ "$HAS_PR_TOKEN" != "true" ]; then
+            echo "::error::commit_mode \"pull-request\" needs the pr_token secret."
+            exit 1
+          fi
+
       - name: Checkout 🛎️
         uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.pr_token || github.token }}
 
       - name: Update Sponsors and About Us 💖
         run: |
@@ -45,6 +73,8 @@ jobs:
           done
 
       - name: Commit Changes 🚀
+        env:
+          GH_TOKEN: ${{ secrets.pr_token }}
         run: |
           git add README.md
           if git diff --staged --quiet; then
@@ -53,5 +83,20 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "$COMMIT_MODE" = "push" ]; then
+            git commit -m "Update README sponsors and About Us"
+            git push
+            exit 0
+          fi
+
+          # Force-pushing one long-lived branch keeps at most one open README PR, which picks up each week's changes.
+          git switch -C "$PR_BRANCH"
           git commit -m "Update README sponsors and About Us"
-          git push
+          git push --force origin "$PR_BRANCH"
+          if [ -z "$(gh pr list --head "$PR_BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base "$GITHUB_REF_NAME" --head "$PR_BRANCH" \
+              --title "Update README sponsors and About Us" \
+              --body "Automated update from https://serversideup.net/github/sponsors.md and https://serversideup.net/github/about.md. It merges automatically once the required checks pass."
+          fi
+          gh pr merge "$PR_BRANCH" --auto --squash --delete-branch
