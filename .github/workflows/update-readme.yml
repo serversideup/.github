@@ -1,0 +1,57 @@
+name: Update README
+on:
+  workflow_call:
+jobs:
+  update-readme:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        # An explicit shell turns on pipefail, so a failed download stops the job instead of emptying the README
+        shell: bash
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v6
+
+      - name: Update Sponsors and About Us 💖
+        run: |
+          for section in sponsors about; do
+            marker="<!-- serversideup-${section} -->"
+            marker_count=$(grep -cxF "$marker" README.md || true)
+            if [ "$marker_count" -eq 0 ]; then
+              echo "::notice::No $marker markers in README.md, skipping ${section}."
+              continue
+            fi
+            if [ "$marker_count" -ne 2 ]; then
+              echo "::error::Expected 2 $marker markers in README.md, found $marker_count."
+              exit 1
+            fi
+
+            # Drop this repo's own entry so it isn't listed as one of "our other projects".
+            curl -fsSL "https://serversideup.net/github/${section}.md" \
+              | grep -vF "<!-- repo:${GITHUB_REPOSITORY} -->" > "$RUNNER_TEMP/${section}.md"
+
+            awk -v marker="$marker" -v content="$RUNNER_TEMP/${section}.md" '
+              $0 == marker {
+                print
+                if (!inside) { while ((getline line < content) > 0) print line }
+                inside = !inside
+                next
+              }
+              !inside
+            ' README.md > "$RUNNER_TEMP/README.md"
+            mv "$RUNNER_TEMP/README.md" README.md
+          done
+
+      - name: Commit Changes 🚀
+        run: |
+          git add README.md
+          if git diff --staged --quiet; then
+            echo "README.md is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update README sponsors and About Us"
+          git push
